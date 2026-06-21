@@ -1,10 +1,13 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from .services import chat_with_jarvis, generar_titulo, chat_with_jarvis_streaming
+from .services import (
+    chat_with_jarvis, generar_titulo, chat_with_jarvis_streaming,
+    sintetizar_voz, TTSError,
+)
 from .models import Sesion, Mensaje
 import threading
-from django.http import StreamingHttpResponse
+from django.http import StreamingHttpResponse, HttpResponse
 import json
 import concurrent.futures 
 
@@ -16,6 +19,36 @@ def _generar_titulo_async(sesion_id: int, message: str, response: str):
         sesion.save()
     except Exception:
         pass
+
+
+
+@api_view(['POST'])
+def tts(request):
+    """Proxy de Text-to-Speech.
+
+    El cliente manda SOLO texto. El servidor pone la API key y
+    devuelve el audio. La clave nunca toca el navegador.
+
+    Entrada (JSON): { "text": "Hola, señor." }
+    Salida OK:      audio MP3 (Content-Type: audio/mpeg)
+    Salida error:   JSON { "error": "..." } con código 4xx/5xx
+    """
+    texto = request.data.get('text', '')
+
+    if not texto.strip():
+        return Response({'error': 'Texto vacío'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        audio_bytes = sintetizar_voz(texto)
+    except TTSError as e:
+        # 502 = Bad Gateway: nosotros estamos bien, pero el servicio
+        # de terceros del que dependemos falló. Es el código semánticamente
+        # correcto para un proxy cuyo upstream falla.
+        return Response({'error': str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
+    # Devolvemos los bytes crudos del audio con el content-type correcto.
+    # Usamos HttpResponse (no DRF Response) porque no es JSON, es binario.
+    return HttpResponse(audio_bytes, content_type='audio/mpeg')
 
 
 @api_view(['POST'])
@@ -83,11 +116,9 @@ def chat_stream_view(request):
     def generar():
         respuesta_completa = []
 
-        for chunk in chat_with_jarvis_streaming(message, history):
-            delta = chunk.choices[0].delta.content or ''
-            if delta:
-                respuesta_completa.append(delta)
-                yield f"data: {json.dumps({'delta': delta, 'session_id': sesion.id})}\n\n"
+        for delta in chat_with_jarvis_streaming(message, history):
+            respuesta_completa.append(delta)
+            yield f"data: {json.dumps({'delta': delta, 'session_id': sesion.id})}\n\n"
 
         
         texto_final = ''.join(respuesta_completa)

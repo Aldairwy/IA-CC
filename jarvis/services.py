@@ -2,8 +2,15 @@ import os
 from datetime import datetime, timedelta
 from groq import Groq
 from tavily import TavilyClient
+import requests 
+import concurrent.futures
+from .ai import get_provider
 
-_groq_client = Groq(api_key=os.getenv('GROQ_API_KEY'))
+ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
+
+
+
 _tavily_client = TavilyClient(api_key=os.getenv('TAVILY_API_KEY'))
 
 def generar_titulo(message: str, response: str) -> str:
@@ -75,64 +82,126 @@ def buscar_web(query: str, fecha_str: str = '') -> str:
         return f"Error en búsqueda web: {str(e)}"
 
 
-def _build_messages(message: str, history: list, buscar: bool = True) -> tuple:
+ 
+def _build_system_y_mensajes(message: str, history: list, buscar: bool = True) -> tuple:
+    """Devuelve (system_prompt, messages_neutrales).
+ 
+    'messages' = historial + el mensaje nuevo del usuario.
+    El system va POR SEPARADO (ya no dentro de la lista).
+    """
     ahora = datetime.now()
     fecha_larga = ahora.strftime("%A %d de %B de %Y")
     hora_actual = ahora.strftime("%H:%M")
     fecha_str = detectar_fecha_query(message)
-
+ 
     contexto_web = ''
     if buscar and necesita_busqueda(message):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(buscar_web, message, fecha_str)
             try:
-                contexto_web = future.result(timeout=3)
+                contexto_web = future.result(timeout=8)  # subido de 3s a 8s
             except concurrent.futures.TimeoutError:
                 contexto_web = ''
-
-    system = f"""
-Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado.
+ 
+    system = f"""Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado.
 Respondes de forma concisa, profesional y levemente formal.
 Llamas al usuario "señor" por defecto.
 Eres directo y eficiente. Nunca rechazas una petición sin ofrecer alternativa.
 Fecha actual: {fecha_larga}. Hora actual: {hora_actual}.
 NUNCA inventes fechas o datos. Menciona la fuente cuando uses internet.
 Si la información puede estar desactualizada, indícalo con honestidad.
-{"INFORMACIÓN ACTUALIZADA DE INTERNET:\\n" + contexto_web if contexto_web else ""}
-"""
-    messages = [{"role": "system", "content": system}] + history + [{"role": "user", "content": message}]
-    return messages, contexto_web
-
-
+{("INFORMACIÓN ACTUALIZADA DE INTERNET:\n" + contexto_web) if contexto_web else ""}"""
+ 
+    messages = history + [{"role": "user", "content": message}]
+    return system, messages
+ 
+ 
 def chat_with_jarvis(message: str, history: list) -> dict:
-    """Respuesta completa — sin streaming."""
-    client = _groq_client
-    messages, _ = _build_messages(message, history)
-
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=messages,
-        max_tokens=1024,
-    )
-    reply = response.choices[0].message.content
+    """Respuesta completa — delega en el proveedor activo (Claude o Groq)."""
+    system, messages = _build_system_y_mensajes(message, history)
+    provider = get_provider()
+    reply = provider.chat(system=system, messages=messages)
     return {
         "response": reply,
         "history": history + [
             {"role": "user", "content": message},
-            {"role": "assistant", "content": reply}
-        ]
+            {"role": "assistant", "content": reply},
+        ],
     }
-
-
+ 
+ 
 def chat_with_jarvis_streaming(message: str, history: list):
-    """Respuesta en streaming — devuelve un generador de chunks."""
-    client = _groq_client
-    messages, _ = _build_messages(message, history)
+    """Respuesta en streaming — devuelve un generador de TROZOS DE TEXTO.
+ 
+    OJO: antes esto devolvía objetos 'chunk' de Groq. Ahora devuelve
+    strings simples. Por eso la VISTA también cambia (ver views.py).
+    """
+    system, messages = _build_system_y_mensajes(message, history)
+    provider = get_provider()
+    return provider.chat_stream(system=system, messages=messages)
+ 
 
-    stream = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=messages,
-        max_tokens=1024,
-        stream=True,  #  streaming real
-    )
-    return stream
+ 
+class TTSError(Exception):
+    """Error propio del servicio de voz.
+ 
+    ¿Por qué una excepción personalizada? Para que la vista pueda
+    distinguir 'falló el TTS' de cualquier otro error genérico y
+    responder con el código HTTP correcto. Es el principio de
+    'fail loud': fallar de forma explícita y nombrada, no con un
+    error genérico que no dice nada.
+    """
+    pass
+ 
+ 
+def sintetizar_voz(texto: str, voice_id: str = ELEVENLABS_VOICE_ID) -> bytes:
+    """Convierte texto en audio usando ElevenLabs y devuelve los bytes MP3.
+ 
+    La API key se lee del ENTORNO DEL SERVIDOR. Nunca llega al cliente.
+    Esa es toda la razón de existir de esta función.
+ 
+    Devuelve: bytes del audio (MP3).
+    Lanza: TTSError si falta la clave o si ElevenLabs falla.
+    """
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    if not api_key:
+        # Fail loud: si no hay clave, lo decimos claramente en los logs
+        # del servidor en vez de mandar una petición rota a ElevenLabs.
+        raise TTSError("ELEVENLABS_API_KEY no está configurada en el servidor.")
+ 
+    if not texto or not texto.strip():
+        raise TTSError("Texto vacío para sintetizar.")
+ 
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    try:
+        respuesta = requests.post(
+            url,
+            headers={
+                "xi-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "text": texto,
+                "model_id": ELEVENLABS_MODEL,
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.75,
+                    "style": 0.3,
+                    "use_speaker_boost": True,
+                },
+            },
+            timeout=30,  # nunca dejes una petición de red sin timeout
+        )
+    except requests.RequestException as e:
+        # Errores de red (DNS, conexión, timeout). Los envolvemos en
+        # NUESTRA excepción para que la vista no tenga que conocer 'requests'.
+        raise TTSError(f"No se pudo contactar a ElevenLabs: {e}") from e
+ 
+    if respuesta.status_code != 200:
+        # ElevenLabs respondió pero con error (clave inválida, sin cuota...).
+        raise TTSError(
+            f"ElevenLabs devolvió {respuesta.status_code}: {respuesta.text[:200]}"
+        )
+ 
+    return respuesta.content
+ 

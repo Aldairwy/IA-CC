@@ -8,4 +8,5 @@ urlpatterns = [
     path('sesiones/', views.sesiones, name='jarvis-sesiones'),
     path('historial/<int:session_id>/', views.historial, name='jarvis-historial'),
     path('eliminar/<int:session_id>/', views.eliminar_sesion, name='jarvis-eliminar'),
+    path('tts/', views.tts, name='jarvis-tts'),
 ]
