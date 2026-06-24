@@ -4,13 +4,23 @@ import os
 
 load_dotenv()
 
+def env_bool(nombre: str, por_defecto: bool = False) -> bool:
+    valor = os.getenv(nombre)
+    if valor is None:
+        return por_defecto
+    return valor.strip().lower() in ("1", "true", "yes", "on", "si", "sí")
+ 
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-jarvis-dev-key-cambia-esto-en-produccion'
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-inseguro-solo-local-cambia-esto")
 
-DEBUG = True
+DEBUG = env_bool("DJANGO_DEBUG", por_defecto=False)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = os.getenv(
+    "DJANGO_ALLOWED_HOSTS",
+    "localhost,127.0.0.1",
+).split(",")
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -78,5 +88,8 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # JARVIS CONFIG
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = os.getenv(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173",
+).split(",")
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
