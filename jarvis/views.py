@@ -7,18 +7,35 @@ from .services import (
 )
 from .models import Sesion, Mensaje
 import threading
+import logging
 from django.http import StreamingHttpResponse, HttpResponse
 import json
-import concurrent.futures 
+import concurrent.futures
+
+logger = logging.getLogger(__name__)
+
 
 def _generar_titulo_async(sesion_id: int, message: str, response: str):
-    """Genera el título en segundo plano sin bloquear la respuesta."""
+    """Genera el título en segundo plano sin bloquear la respuesta.
+
+    Corre en un hilo aparte: si algo falla aquí, NO debe afectar a la
+    respuesta que el usuario ya recibió. Por eso atrapamos cualquier
+    excepción. Pero, a diferencia de antes, la REGISTRAMOS en vez de
+    tirarla a la basura con 'pass': un fallo que no se ve es un bug que
+    nunca arreglas (justo lo que pasó con el bug de _groq_client).
+    """
     try:
         sesion = Sesion.objects.get(id=sesion_id)
         sesion.titulo = generar_titulo(message, response)
         sesion.save()
+    except Sesion.DoesNotExist:
+        # Caso esperable: la sesión se borró antes de que el hilo corriera.
+        # No es un error grave; basta con dejar constancia a nivel informativo.
+        logger.info("No se generó título: la sesión %s ya no existe.", sesion_id)
     except Exception:
-        pass
+        # Cualquier otro fallo (la IA del título, la BD, etc.). No tumbamos
+        # nada, pero lo registramos CON traza completa para poder depurarlo.
+        logger.exception("Fallo inesperado generando título para sesión %s", sesion_id)
 
 
 

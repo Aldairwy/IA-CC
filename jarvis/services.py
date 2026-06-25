@@ -1,10 +1,12 @@
 import os
+import logging
 from datetime import datetime, timedelta
-from groq import Groq
 from tavily import TavilyClient
 import requests 
 import concurrent.futures
 from .ai import get_provider
+
+logger = logging.getLogger(__name__)
 
 ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
@@ -14,19 +16,34 @@ ELEVENLABS_MODEL = "eleven_multilingual_v2"
 _tavily_client = TavilyClient(api_key=os.getenv('TAVILY_API_KEY'))
 
 def generar_titulo(message: str, response: str) -> str:
+    """Genera un título corto para la conversación usando el proveedor de IA activo.
+
+    Antes esto dependía de un cliente Groq global (_groq_client) que dejó de
+    existir tras mover la IA a la capa jarvis/ai/. Ahora delegamos en
+    get_provider(), igual que el chat: un solo punto de cambio de proveedor.
+
+    Si el proveedor falla, devolvemos un fallback razonable (las primeras
+    palabras del mensaje). Pero a diferencia de antes, REGISTRAMOS el error
+    en vez de tragárnoslo: un fallo silencioso es un bug que nunca verás.
+    """
+    system = (
+        "Eres un generador de títulos. Devuelve un título corto, máximo 5 "
+        "palabras, que resuma la conversación. Sin comillas ni explicación, "
+        "solo el título."
+    )
+    contenido = f"Usuario: {message}\nJarvis: {response[:200]}"
+    messages = [{"role": "user", "content": contenido}]
+
     try:
-        client = _groq_client
-        prompt = f"""Genera un título corto (máximo 5 palabras) para esta conversación.
-Solo devuelve el título, sin comillas ni explicación.
-Usuario: {message}
-Jarvis: {response[:200]}"""
-        res = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=20,
-        )
-        return res.choices[0].message.content.strip()
-    except:
+        provider = get_provider()
+        titulo = provider.chat(system=system, messages=messages)
+        titulo = titulo.strip().strip('"').strip()
+        # Si el modelo devolvió vacío o algo absurdamente largo, usamos fallback.
+        if not titulo or len(titulo) > 60:
+            return message[:50]
+        return titulo
+    except Exception as e:
+        logger.warning("No se pudo generar título con IA, usando fallback: %s", e)
         return message[:50]
 
 
@@ -204,4 +221,3 @@ def sintetizar_voz(texto: str, voice_id: str = ELEVENLABS_VOICE_ID) -> bytes:
         )
  
     return respuesta.content
- 
