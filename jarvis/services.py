@@ -1,5 +1,6 @@
 import os
 import logging
+from functools import lru_cache
 from datetime import datetime, timedelta
 from tavily import TavilyClient
 import requests 
@@ -12,8 +13,20 @@ ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
 
+@lru_cache(maxsize=1)
+def _get_tavily_client() -> TavilyClient:
+    """Devuelve el cliente de Tavily, creándolo solo la primera vez.
 
-_tavily_client = TavilyClient(api_key=os.getenv('TAVILY_API_KEY'))
+    ¿Por qué perezoso (lazy)? Antes el cliente se creaba al IMPORTAR este
+    módulo. Eso significaba que un problema con la clave de Tavily podía
+    tumbar el arranque entero del servidor, incluido el chat, que no usa
+    Tavily para nada. Ahora el cliente se construye la primera vez que se
+    BUSCA en la web. Si falla, falla solo la búsqueda, no todo Jarvis.
+
+    @lru_cache(maxsize=1) guarda el resultado: se crea una vez y se reutiliza
+    en las siguientes llamadas. Es el mismo patrón que usamos en ai/factory.py.
+    """
+    return TavilyClient(api_key=os.getenv('TAVILY_API_KEY'))
 
 def generar_titulo(message: str, response: str) -> str:
     """Genera un título corto para la conversación usando el proveedor de IA activo.
@@ -78,7 +91,7 @@ def necesita_busqueda(message: str) -> bool:
 
 def buscar_web(query: str, fecha_str: str = '') -> str:
     try:
-        client = _tavily_client
+        client = _get_tavily_client()
         query_enriquecido = f"{query} {fecha_str}".strip() if fecha_str else query
         es_profunda = any(k in query.lower() for k in ['noticias', 'último', 'última', 'ayer', 'hoy'])
         result = client.search(

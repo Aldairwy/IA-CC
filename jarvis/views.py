@@ -110,9 +110,20 @@ def chat(request):
 
 
 def chat_stream_view(request):
-    """Endpoint nuevo — respuesta en streaming por frases."""
-    import json
-    data = json.loads(request.body)
+    """Endpoint de respuesta en streaming (Server-Sent Events).
+
+    Nota de diseño: a diferencia de las otras vistas, esta NO usa @api_view
+    de DRF. Es a propósito: DRF está pensado para respuestas completas que se
+    serializan de una vez, mientras que el streaming va soltando trozos de
+    texto. Por eso aquí leemos el body a mano y devolvemos StreamingHttpResponse.
+    """
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        # Body vacío o mal formado: respondemos 400 en vez de reventar con
+        # un error 500 feo. Fail loud, pero de forma controlada.
+        return StreamingHttpResponse(status=400)
+
     message = data.get('message', '')
     session_id = data.get('session_id', None)
 
